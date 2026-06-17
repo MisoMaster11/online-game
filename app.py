@@ -222,6 +222,7 @@ def tick():
                     'id': p['id'],
                     'name': p['name'],
                     'body': p['body'],
+                    'direction': p['direction'],
                     'color': p['color'],
                     'alive': p['alive'],
                     'score': p['score'],
