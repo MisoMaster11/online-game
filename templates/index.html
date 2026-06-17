@@ -295,19 +295,23 @@
   socket.on('game_state', state => {
     if (state.grid) setCanvasSize(state.grid.w, state.grid.h);
     prevState = curState;
-    curState  = state;
-    tickTime  = performance.now();
 
-    // If server moved MY snake in the old direction (hasn't processed our input yet),
-    // override its position with the previous position so there's no backward snap.
-    if (localDir && myId && prevState) {
-      const prevMe = prevState.players.find(p => p.id === myId);
-      const curMe  = curState.players.find(p => p.id === myId);
-      if (prevMe && curMe && curMe.alive && prevMe.alive && curMe.direction !== localDir) {
-        curMe.body      = prevMe.body;
-        curMe.direction = localDir;
+    // If the server moved MY snake in the old direction (hasn't processed input yet),
+    // keep the previous position so the extrapolation doesn't snap backward.
+    // Also don't reset tickTime so t stays continuous — no visible jump.
+    let resetTick = true;
+    if (localDir && myId && curState) {
+      const prevMe   = curState.players.find(p => p.id === myId);
+      const serverMe = state.players.find(p => p.id === myId);
+      if (prevMe && serverMe && serverMe.alive && prevMe.alive && serverMe.direction !== localDir) {
+        serverMe.body      = prevMe.body;
+        serverMe.direction = localDir;
+        resetTick = false; // keep tickTime so t continues from where it was
       }
     }
+
+    curState = state;
+    if (resetTick) tickTime = performance.now();
   });
 
   socket.on('you_died', data => {
@@ -425,10 +429,15 @@
     for (const p of sorted) {
       if (p.id === myId) mySnake = p;
       if (!p.alive) continue;
-      // Detect if this snake actually moved last tick (stationary = not ready yet)
+      // Detect if this snake actually moved last tick (stationary = not ready yet).
+      // For MY snake: always extrapolate once localDir is set, even after an override
+      // (the override holds prev position, so the moved check would wrongly return false).
+      const isMySnake = p.id === myId;
       const prev = prevState ? prevState.players.find(q => q.id === p.id) : null;
-      const moved = prev && (prev.body[0].x !== p.body[0].x || prev.body[0].y !== p.body[0].y);
-      drawSnake(p, moved ? t : 0, p.id === myId);
+      const moved = isMySnake
+        ? (localDir !== null)
+        : (prev && (prev.body[0].x !== p.body[0].x || prev.body[0].y !== p.body[0].y));
+      drawSnake(p, moved ? t : 0, isMySnake);
     }
 
     // HUD (throttle DOM writes to avoid layout thrash)
