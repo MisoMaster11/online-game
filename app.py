@@ -1,3 +1,4 @@
+import os
 import random
 import threading
 import time
@@ -7,7 +8,6 @@ from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'snek-secret-key-2024'
-import os
 _async_mode = 'gevent' if os.environ.get('RENDER') else 'threading'
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode=_async_mode)
 
@@ -317,8 +317,14 @@ def on_respawn():
             game['players'][sid] = new
 
 
-game_thread = threading.Thread(target=game_loop, daemon=True)
-game_thread.start()
+def start_game_loop():
+    # start_background_task works correctly with both threading and gevent modes
+    socketio.start_background_task(game_loop)
+
 
 if __name__ == '__main__':
+    start_game_loop()
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+else:
+    # Running under gunicorn — start the loop when the module is imported
+    start_game_loop()
