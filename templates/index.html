@@ -322,7 +322,16 @@
   };
 
   let lastDir = null;
+  const OPPOSITE = { up:'down', down:'up', left:'right', right:'left' };
   function sendDir(d) {
+    // Apply direction locally immediately (no waiting for server round-trip)
+    if (gameState && myId) {
+      const me = gameState.players.find(p => p.id === myId);
+      if (me && me.alive && d !== OPPOSITE[me.direction]) {
+        me.direction = d;
+        renderFrame();
+      }
+    }
     lastDir = d;
     startHint.style.display = 'none';
     socket.emit('dir', { d });
