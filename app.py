@@ -13,7 +13,7 @@ socketio = SocketIO(app, cors_allowed_origins='*', async_mode=_async_mode)
 
 GRID_W = 50
 GRID_H = 40
-TICK_RATE = 0.1  # 10 ticks/sec
+TICK_RATE = 0.05  # 20 ticks/sec
 
 COLORS = [
     '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4',

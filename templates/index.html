@@ -240,118 +240,65 @@
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
 (function () {
-  const lobby       = document.getElementById('lobby');
-  const gameWrapper = document.getElementById('gameWrapper');
-  const canvas      = document.getElementById('gameCanvas');
-  const ctx         = canvas.getContext('2d');
-  const nameInput   = document.getElementById('nameInput');
-  const playBtn     = document.getElementById('playBtn');
-  const deathScreen = document.getElementById('deathScreen');
-  const respawnBtn  = document.getElementById('respawnBtn');
-  const hudScore    = document.getElementById('hudScore');
-  const hudKills    = document.getElementById('hudKills');
-  const hudLen      = document.getElementById('hudLen');
-  const hudPlayers  = document.getElementById('hudPlayers');
-  const lbRows      = document.getElementById('lbRows');
-  const pingEl      = document.getElementById('ping');
-  const startHint   = document.getElementById('startHint');
+  const lobby      = document.getElementById('lobby');
+  const gameWrapper= document.getElementById('gameWrapper');
+  const canvas     = document.getElementById('gameCanvas');
+  const ctx        = canvas.getContext('2d');
+  const nameInput  = document.getElementById('nameInput');
+  const playBtn    = document.getElementById('playBtn');
+  const deathScreen= document.getElementById('deathScreen');
+  const respawnBtn = document.getElementById('respawnBtn');
+  const hudScore   = document.getElementById('hudScore');
+  const hudKills   = document.getElementById('hudKills');
+  const hudLen     = document.getElementById('hudLen');
+  const hudPlayers = document.getElementById('hudPlayers');
+  const lbRows     = document.getElementById('lbRows');
+  const pingEl     = document.getElementById('ping');
+  const startHint  = document.getElementById('startHint');
 
-  const CELL = 16;
+  const CELL    = 16;
   let GRID_W = 50, GRID_H = 40;
 
-  // Set canvas internal dimensions immediately — don't wait for server events.
-  // Re-assigning canvas.width clears the canvas AND resets the 2D context state,
-  // so we only do it when the grid size actually changes.
   function setCanvasSize(w, h) {
     if (canvas.width !== w * CELL || canvas.height !== h * CELL) {
       canvas.width  = w * CELL;
       canvas.height = h * CELL;
     }
-    GRID_W = w;
-    GRID_H = h;
+    GRID_W = w; GRID_H = h;
     resizeCanvas();
   }
   setCanvasSize(GRID_W, GRID_H);
 
-  let myId       = null;
-  let myColor    = '#4ECDC4';
-  let gameState  = null;
-  let dead       = false;
+  let myId      = null;
+  let dead      = false;
+  let lastDir   = null;
 
-  // ── Client-side prediction ───────────────────────────────────
-  const TICK_MS  = 100;
-  const DIR_DELTA = {up:[0,-1], down:[0,1], left:[-1,0], right:[1,0]};
-  const OPP       = {up:'down', down:'up', left:'right', right:'left'};
-  let pendingDir  = null;  // direction queued by last keypress
-  let clientReady = false; // true after first keypress
-  let predLoop    = null;
-
-  function startPredLoop() {
-    if (predLoop) clearInterval(predLoop);
-    predLoop = setInterval(predStep, TICK_MS);
-  }
-
-  function predStep() {
-    if (!gameState || !myId || !clientReady) return;
-    const me = gameState.players.find(p => p.id === myId);
-    if (!me || !me.alive) return;
-
-    // Apply queued direction (ignore 180° reversals)
-    const dir = (pendingDir && pendingDir !== OPP[me.direction]) ? pendingDir : me.direction;
-    pendingDir = null;
-    me.direction = dir;
-
-    // Move one step
-    const [dx, dy] = DIR_DELTA[dir];
-    const nh = { x: me.body[0].x + dx, y: me.body[0].y + dy };
-
-    // Optimistically eat food
-    const fi = (gameState.food || []).findIndex(f => f.x === nh.x && f.y === nh.y);
-    me.body.unshift(nh);
-    if (fi >= 0) { gameState.food.splice(fi, 1); me.score++; me.length++; }
-    else         { me.body.pop(); }
-
-    renderFrame();
-  }
+  // Two snapshots for interpolation: prev and cur server state
+  let curState  = null;
+  let prevState = null;
+  let tickTime  = 0;          // performance.now() when curState arrived
+  const SERVER_MS = 50;       // must match server TICK_RATE = 0.05
 
   // ── Socket ──────────────────────────────────────────────────
   const socket = io({ transports: ['websocket', 'polling'], upgrade: true });
 
-  socket.on('config', (cfg) => {
-    setCanvasSize(cfg.grid_w, cfg.grid_h);
-  });
+  socket.on('config', cfg => setCanvasSize(cfg.grid_w, cfg.grid_h));
 
-  socket.on('joined', (data) => {
-    myId         = data.id;
-    myColor      = data.color;
-    dead         = false;
-    clientReady  = false;
-    pendingDir   = null;
+  socket.on('joined', data => {
+    myId  = data.id;
+    dead  = false;
+    lastDir = null;
     startHint.style.display = 'block';
-    startPredLoop();
   });
 
-  socket.on('game_state', (state) => {
+  socket.on('game_state', state => {
     if (state.grid) setCanvasSize(state.grid.w, state.grid.h);
-
-    // Preserve local prediction for MY snake so server corrections don't snap
-    const localMe = gameState && myId ? gameState.players.find(p => p.id === myId) : null;
-    gameState = state;
-
-    if (localMe && myId) {
-      const serverMe = gameState.players.find(p => p.id === myId);
-      if (serverMe && serverMe.alive && localMe.alive) {
-        // Keep client-predicted position; sync authoritative fields
-        serverMe.body      = localMe.body;
-        serverMe.direction = localMe.direction;
-        serverMe.length    = localMe.body.length;
-      }
-    }
-
-    renderFrame();
+    prevState = curState;
+    curState  = state;
+    tickTime  = performance.now();
   });
 
-  socket.on('you_died', (data) => {
+  socket.on('you_died', data => {
     if (dead) return;
     dead = true;
     document.getElementById('dScore').textContent = data.score;
@@ -360,58 +307,45 @@
     deathScreen.style.display = 'flex';
   });
 
-  // Ping
   let pingStart = 0;
   setInterval(() => { pingStart = Date.now(); socket.emit('ping_check'); }, 3000);
-  socket.on('pong_check', () => {
-    pingEl.textContent = `${Date.now() - pingStart}ms`;
-  });
+  socket.on('pong_check', () => { pingEl.textContent = `${Date.now() - pingStart}ms`; });
 
   // ── Controls ────────────────────────────────────────────────
   const KEY_DIR = {
-    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-    w: 'up', s: 'down', a: 'left', d: 'right',
-    W: 'up', S: 'down', A: 'left', D: 'right',
+    ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+    w:'up', s:'down', a:'left', d:'right',
+    W:'up', S:'down', A:'left', D:'right',
   };
 
-  let lastDir = null;
   function sendDir(d) {
-    pendingDir = d;
-    clientReady = true;
-    startHint.style.display = 'none';
-    // Fire a prediction step immediately so the snake moves on keypress
-    predStep();
+    if (d === lastDir) return;
     lastDir = d;
+    startHint.style.display = 'none';
+    // Optimistically update direction for smooth eye rendering
+    if (curState && myId) {
+      const me = curState.players.find(p => p.id === myId);
+      if (me) me.direction = d;
+    }
     socket.emit('dir', { d });
   }
-  document.addEventListener('keydown', (e) => {
+
+  document.addEventListener('keydown', e => {
     const d = KEY_DIR[e.key];
-    if (d && d !== lastDir) {
-      sendDir(d);
-      if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
-        e.preventDefault();
-      }
-    }
+    if (d) { sendDir(d); if (e.key.startsWith('Arrow')) e.preventDefault(); }
   });
 
-  // Touch / swipe
   let touchStart = null;
-  document.addEventListener('touchstart', (e) => {
+  document.addEventListener('touchstart', e => {
     touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
   }, { passive: true });
-  document.addEventListener('touchend', (e) => {
+  document.addEventListener('touchend', e => {
     if (!touchStart) return;
     const dx = e.changedTouches[0].clientX - touchStart.x;
     const dy = e.changedTouches[0].clientY - touchStart.y;
     touchStart = null;
     if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
-    let d;
-    if (Math.abs(dx) > Math.abs(dy)) {
-      d = dx > 0 ? 'right' : 'left';
-    } else {
-      d = dy > 0 ? 'down' : 'up';
-    }
-    sendDir(d);
+    sendDir(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
   }, { passive: true });
 
   // ── Lobby ────────────────────────────────────────────────────
@@ -421,84 +355,72 @@
     gameWrapper.style.display = 'block';
     socket.emit('join', { name });
   }
-
   playBtn.addEventListener('click', startGame);
-  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') startGame(); });
+  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') startGame(); });
 
   respawnBtn.addEventListener('click', () => {
     deathScreen.style.display = 'none';
-    dead         = false;
-    lastDir      = null;
-    clientReady  = false;
-    pendingDir   = null;
+    dead = false; lastDir = null;
     startHint.style.display = 'block';
-    startPredLoop();
     socket.emit('respawn');
   });
 
-  // Scale canvas to fit screen
+  // ── Layout ───────────────────────────────────────────────────
   function resizeCanvas() {
-    const scale = Math.min(
-      window.innerWidth  / (GRID_W * CELL),
-      window.innerHeight / (GRID_H * CELL)
-    );
-    canvas.style.width  = (GRID_W * CELL * scale) + 'px';
-    canvas.style.height = (GRID_H * CELL * scale) + 'px';
+    const scale = Math.min(window.innerWidth / (GRID_W * CELL), window.innerHeight / (GRID_H * CELL));
+    canvas.style.width  = GRID_W * CELL * scale + 'px';
+    canvas.style.height = GRID_H * CELL * scale + 'px';
   }
   window.addEventListener('resize', resizeCanvas);
 
-  // ── Render ───────────────────────────────────────────────────
-  function renderFrame() {
-    if (!gameState) return;
-    try {
+  // ── RAF render loop (60 fps) ─────────────────────────────────
+  // Snakes smoothly slide between grid cells by interpolating prev→cur
+  // server positions. Hitbox = server position (no prediction drift).
+  requestAnimationFrame(function loop(now) {
+    requestAnimationFrame(loop);
+    if (!curState) return;
+    const t = Math.min((now - tickTime) / SERVER_MS, 1); // 0..1 between ticks
+    draw(t);
+  });
 
-    const { players, food } = gameState;
+  function lerp(a, b, t) { return a + (b - a) * t; }
 
-    // Background grid
+  function draw(t) {
+    const { players, food } = curState;
+
+    // Background
     ctx.fillStyle = '#0d0d1a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Subtle grid lines
+    // Grid lines
     ctx.strokeStyle = '#161626';
     ctx.lineWidth = 0.5;
     for (let x = 0; x <= GRID_W; x++) {
-      ctx.beginPath();
-      ctx.moveTo(x * CELL, 0);
-      ctx.lineTo(x * CELL, GRID_H * CELL);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, GRID_H * CELL); ctx.stroke();
     }
     for (let y = 0; y <= GRID_H; y++) {
-      ctx.beginPath();
-      ctx.moveTo(0, y * CELL);
-      ctx.lineTo(GRID_W * CELL, y * CELL);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(GRID_W * CELL, y * CELL); ctx.stroke();
     }
 
     // Food
     for (const f of food) {
-      const cx = f.x * CELL + CELL / 2;
-      const cy = f.y * CELL + CELL / 2;
-      const r  = CELL * 0.35;
       ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.arc(f.x * CELL + CELL / 2, f.y * CELL + CELL / 2, CELL * 0.32, 0, Math.PI * 2);
       ctx.fillStyle = '#FFD700';
-      ctx.shadowColor = '#FFD700';
-      ctx.shadowBlur = 6;
       ctx.fill();
-      ctx.shadowBlur = 0;
     }
 
-    // Snakes
+    // Snakes (draw longest last = on top)
     let mySnake = null;
-    const sorted = [...players].sort((a, b) => b.length - a.length);
-
+    const sorted = [...players].sort((a, b) => a.length - b.length);
     for (const p of sorted) {
       if (p.id === myId) mySnake = p;
       if (!p.alive) continue;
-      drawSnake(p, p.id === myId);
+      const prev = prevState ? prevState.players.find(q => q.id === p.id) : null;
+      drawSnake(p, prev, t, p.id === myId);
     }
 
-    // HUD
+    // HUD (throttle DOM writes to avoid layout thrash)
     if (mySnake) {
       hudScore.textContent   = mySnake.score;
       hudKills.textContent   = mySnake.kills;
@@ -506,116 +428,83 @@
     }
     hudPlayers.textContent = players.filter(p => p.alive).length;
 
-    // Leaderboard (top 8 alive)
-    const top = [...players]
-      .filter(p => p.alive)
-      .sort((a, b) => b.length - a.length)
-      .slice(0, 8);
-    lbRows.innerHTML = top.map((p, i) => `
+    // Leaderboard — only rebuild when length order changes (cheap check)
+    const top = [...players].filter(p => p.alive).sort((a, b) => b.length - a.length).slice(0, 8);
+    lbRows.innerHTML = top.map(p => `
       <div class="lb-row ${p.id === myId ? 'lb-me' : ''}">
         <div class="lb-dot" style="background:${p.color}"></div>
         <div class="lb-name">${escHtml(p.name)}</div>
         <div class="lb-score">${p.length}</div>
-      </div>
-    `).join('');
-    } catch (err) {
-      ctx.fillStyle = '#fff';
-      ctx.font = '14px monospace';
-      ctx.fillText('Render error: ' + err.message, 10, 30);
-    }
+      </div>`).join('');
   }
 
-  function drawSnake(p, isMe) {
-    const body = p.body;
-    if (!body || body.length === 0) return;
+  function drawSnake(cur, prev, t, isMe) {
+    if (!cur.body.length) return;
+    const color = cur.color;
 
-    const color = p.color;
+    if (isMe) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
 
-    // Glow effect for current player
-    if (isMe) {
-      ctx.shadowColor = color;
-      ctx.shadowBlur  = 12;
-    }
-
-    // Body segments (rounded rects)
-    for (let i = body.length - 1; i >= 1; i--) {
-      const seg = body[i];
-      const t   = 1 - i / body.length; // 0 at tail, 1 at head
-      const alpha = 0.55 + 0.45 * t;
+    // Body (tail → neck, drawn back-to-front)
+    for (let i = cur.body.length - 1; i >= 1; i--) {
+      const c = cur.body[i];
+      const p = prev && prev.body[i] ? prev.body[i] : c;
+      const x = lerp(p.x, c.x, t) * CELL;
+      const y = lerp(p.y, c.y, t) * CELL;
+      const alpha = 0.45 + 0.55 * (1 - i / cur.body.length);
       ctx.fillStyle = hexAlpha(color, alpha);
-      roundRect(ctx, seg.x * CELL + 1, seg.y * CELL + 1, CELL - 2, CELL - 2, 3);
+      rr(x + 1, y + 1, CELL - 2, CELL - 2, 3);
       ctx.fill();
     }
 
-    // Head
-    const head = body[0];
+    // Head (interpolated)
+    const ch = cur.body[0];
+    const ph = prev && prev.body[0] ? prev.body[0] : ch;
+    const hx = lerp(ph.x, ch.x, t) * CELL;
+    const hy = lerp(ph.y, ch.y, t) * CELL;
     ctx.fillStyle = color;
-    roundRect(ctx, head.x * CELL + 1, head.y * CELL + 1, CELL - 2, CELL - 2, 4);
+    rr(hx + 1, hy + 1, CELL - 2, CELL - 2, 4);
     ctx.fill();
-
-    // Eyes
-    drawEyes(head, p.direction || 'right', color);
 
     ctx.shadowBlur = 0;
 
-    // Name tag above head
-    ctx.font = `bold ${CELL * 0.75}px Segoe UI, sans-serif`;
+    // Eyes
+    drawEyes(hx, hy, cur.direction);
+
+    // Name tag
+    ctx.font = `bold 11px Segoe UI, sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    const tw = ctx.measureText(p.name).width;
-    ctx.fillRect(
-      head.x * CELL + CELL / 2 - tw / 2 - 2,
-      head.y * CELL - CELL * 1.1,
-      tw + 4, CELL * 0.85
-    );
+    const tw = ctx.measureText(cur.name).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(hx + CELL / 2 - tw / 2 - 2, hy - 14, tw + 4, 13);
     ctx.fillStyle = isMe ? '#fff' : '#ccc';
-    ctx.fillText(p.name, head.x * CELL + CELL / 2, head.y * CELL - CELL * 0.35);
+    ctx.fillText(cur.name, hx + CELL / 2, hy - 3);
     ctx.textAlign = 'left';
   }
 
-  function drawEyes(head, dir, color) {
-    const cx = head.x * CELL + CELL / 2;
-    const cy = head.y * CELL + CELL / 2;
-    const offsets = {
-      right: [[ 2,  -2], [ 2,  2]],
-      left:  [[-2,  -2], [-2,  2]],
-      up:    [[-2,  -2], [ 2, -2]],
-      down:  [[-2,   2], [ 2,  2]],
-    };
-    const eyes = offsets[dir] || offsets.right;
-    for (const [ex, ey] of eyes) {
-      ctx.beginPath();
-      ctx.arc(cx + ex, cy + ey, 1.8, 0, Math.PI * 2);
-      ctx.fillStyle = '#fff';
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(cx + ex * 1.1, cy + ey * 1.1, 0.9, 0, Math.PI * 2);
-      ctx.fillStyle = '#000';
-      ctx.fill();
+  function drawEyes(hx, hy, dir) {
+    const cx = hx + CELL / 2, cy = hy + CELL / 2;
+    const o = { right:[[2,-2],[2,2]], left:[[-2,-2],[-2,2]], up:[[-2,-2],[2,-2]], down:[[-2,2],[2,2]] };
+    for (const [ex, ey] of (o[dir] || o.right)) {
+      ctx.beginPath(); ctx.arc(cx+ex, cy+ey, 1.8, 0, Math.PI*2);
+      ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.beginPath(); ctx.arc(cx+ex*1.1, cy+ey*1.1, 0.9, 0, Math.PI*2);
+      ctx.fillStyle = '#000'; ctx.fill();
     }
   }
 
-  function roundRect(ctx, x, y, w, h, r) {
+  // rounded rect helper
+  function rr(x, y, w, h, r) {
     ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+    ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+    ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
     ctx.closePath();
   }
 
-  function hexAlpha(hex, alpha) {
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    return `rgba(${r},${g},${b},${alpha})`;
+  function hexAlpha(hex, a) {
+    return `rgba(${parseInt(hex.slice(1,3),16)},${parseInt(hex.slice(3,5),16)},${parseInt(hex.slice(5,7),16)},${a})`;
   }
-
   function escHtml(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
