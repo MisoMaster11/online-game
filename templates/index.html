@@ -273,10 +273,46 @@
   }
   setCanvasSize(GRID_W, GRID_H);
 
-  let myId    = null;
-  let myColor = '#4ECDC4';
-  let gameState = null;
-  let dead    = false;
+  let myId       = null;
+  let myColor    = '#4ECDC4';
+  let gameState  = null;
+  let dead       = false;
+
+  // ── Client-side prediction ───────────────────────────────────
+  const TICK_MS  = 100;
+  const DIR_DELTA = {up:[0,-1], down:[0,1], left:[-1,0], right:[1,0]};
+  const OPP       = {up:'down', down:'up', left:'right', right:'left'};
+  let pendingDir  = null;  // direction queued by last keypress
+  let clientReady = false; // true after first keypress
+  let predLoop    = null;
+
+  function startPredLoop() {
+    if (predLoop) clearInterval(predLoop);
+    predLoop = setInterval(predStep, TICK_MS);
+  }
+
+  function predStep() {
+    if (!gameState || !myId || !clientReady) return;
+    const me = gameState.players.find(p => p.id === myId);
+    if (!me || !me.alive) return;
+
+    // Apply queued direction (ignore 180° reversals)
+    const dir = (pendingDir && pendingDir !== OPP[me.direction]) ? pendingDir : me.direction;
+    pendingDir = null;
+    me.direction = dir;
+
+    // Move one step
+    const [dx, dy] = DIR_DELTA[dir];
+    const nh = { x: me.body[0].x + dx, y: me.body[0].y + dy };
+
+    // Optimistically eat food
+    const fi = (gameState.food || []).findIndex(f => f.x === nh.x && f.y === nh.y);
+    me.body.unshift(nh);
+    if (fi >= 0) { gameState.food.splice(fi, 1); me.score++; me.length++; }
+    else         { me.body.pop(); }
+
+    renderFrame();
+  }
 
   // ── Socket ──────────────────────────────────────────────────
   const socket = io({ transports: ['websocket', 'polling'], upgrade: true });
@@ -286,15 +322,32 @@
   });
 
   socket.on('joined', (data) => {
-    myId    = data.id;
-    myColor = data.color;
-    dead    = false;
+    myId         = data.id;
+    myColor      = data.color;
+    dead         = false;
+    clientReady  = false;
+    pendingDir   = null;
     startHint.style.display = 'block';
+    startPredLoop();
   });
 
   socket.on('game_state', (state) => {
-    gameState = state;
     if (state.grid) setCanvasSize(state.grid.w, state.grid.h);
+
+    // Preserve local prediction for MY snake so server corrections don't snap
+    const localMe = gameState && myId ? gameState.players.find(p => p.id === myId) : null;
+    gameState = state;
+
+    if (localMe && myId) {
+      const serverMe = gameState.players.find(p => p.id === myId);
+      if (serverMe && serverMe.alive && localMe.alive) {
+        // Keep client-predicted position; sync authoritative fields
+        serverMe.body      = localMe.body;
+        serverMe.direction = localMe.direction;
+        serverMe.length    = localMe.body.length;
+      }
+    }
+
     renderFrame();
   });
 
@@ -322,18 +375,13 @@
   };
 
   let lastDir = null;
-  const OPPOSITE = { up:'down', down:'up', left:'right', right:'left' };
   function sendDir(d) {
-    // Apply direction locally immediately (no waiting for server round-trip)
-    if (gameState && myId) {
-      const me = gameState.players.find(p => p.id === myId);
-      if (me && me.alive && d !== OPPOSITE[me.direction]) {
-        me.direction = d;
-        renderFrame();
-      }
-    }
-    lastDir = d;
+    pendingDir = d;
+    clientReady = true;
     startHint.style.display = 'none';
+    // Fire a prediction step immediately so the snake moves on keypress
+    predStep();
+    lastDir = d;
     socket.emit('dir', { d });
   }
   document.addEventListener('keydown', (e) => {
@@ -379,9 +427,12 @@
 
   respawnBtn.addEventListener('click', () => {
     deathScreen.style.display = 'none';
-    dead = false;
-    lastDir = null;
+    dead         = false;
+    lastDir      = null;
+    clientReady  = false;
+    pendingDir   = null;
     startHint.style.display = 'block';
+    startPredLoop();
     socket.emit('respawn');
   });
 
