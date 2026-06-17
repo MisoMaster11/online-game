@@ -277,7 +277,7 @@
   let curState  = null;
   let prevState = null;
   let tickTime  = 0;          // performance.now() when curState arrived
-  const SERVER_MS = 50;       // must match server TICK_RATE = 0.05
+  const SERVER_MS = 125;      // must match server TICK_RATE = 0.125
 
   // ── Socket ──────────────────────────────────────────────────
   const socket = io({ transports: ['websocket', 'polling'], upgrade: true });
@@ -416,8 +416,10 @@
     for (const p of sorted) {
       if (p.id === myId) mySnake = p;
       if (!p.alive) continue;
+      // Detect if this snake actually moved last tick (stationary = not ready yet)
       const prev = prevState ? prevState.players.find(q => q.id === p.id) : null;
-      drawSnake(p, prev, t, p.id === myId);
+      const moved = prev && (prev.body[0].x !== p.body[0].x || prev.body[0].y !== p.body[0].y);
+      drawSnake(p, moved ? t : 0, p.id === myId);
     }
 
     // HUD (throttle DOM writes to avoid layout thrash)
@@ -438,40 +440,45 @@
       </div>`).join('');
   }
 
-  function drawSnake(cur, prev, t, isMe) {
+  const DELTA = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+
+  function drawSnake(cur, t, isMe) {
     if (!cur.body.length) return;
     const color = cur.color;
 
     if (isMe) { ctx.shadowColor = color; ctx.shadowBlur = 10; }
 
-    // Body (tail → neck, drawn back-to-front)
+    // Extrapolation: each segment slides toward the one ahead of it.
+    // At t=0 snake is at server position; at t=1 it has advanced one full cell.
+    // Head extrapolates forward in movement direction.
+    // Segment i extrapolates toward segment i-1 (where it will be next tick).
+    const [dx, dy] = DELTA[cur.direction] || [1, 0];
+    const hx = (cur.body[0].x + dx * t) * CELL;
+    const hy = (cur.body[0].y + dy * t) * CELL;
+
+    // Body (tail → neck, back-to-front)
     for (let i = cur.body.length - 1; i >= 1; i--) {
-      const c = cur.body[i];
-      const p = prev && prev.body[i] ? prev.body[i] : c;
-      const x = lerp(p.x, c.x, t) * CELL;
-      const y = lerp(p.y, c.y, t) * CELL;
+      const seg  = cur.body[i];
+      const next = cur.body[i - 1]; // segment ahead
+      const x = lerp(seg.x, next.x, t) * CELL;
+      const y = lerp(seg.y, next.y, t) * CELL;
       const alpha = 0.45 + 0.55 * (1 - i / cur.body.length);
       ctx.fillStyle = hexAlpha(color, alpha);
       rr(x + 1, y + 1, CELL - 2, CELL - 2, 3);
       ctx.fill();
     }
 
-    // Head (interpolated)
-    const ch = cur.body[0];
-    const ph = prev && prev.body[0] ? prev.body[0] : ch;
-    const hx = lerp(ph.x, ch.x, t) * CELL;
-    const hy = lerp(ph.y, ch.y, t) * CELL;
+    // Head
     ctx.fillStyle = color;
     rr(hx + 1, hy + 1, CELL - 2, CELL - 2, 4);
     ctx.fill();
-
     ctx.shadowBlur = 0;
 
     // Eyes
     drawEyes(hx, hy, cur.direction);
 
     // Name tag
-    ctx.font = `bold 11px Segoe UI, sans-serif`;
+    ctx.font = 'bold 11px Segoe UI, sans-serif';
     ctx.textAlign = 'center';
     const tw = ctx.measureText(cur.name).width;
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
