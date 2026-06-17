@@ -297,6 +297,17 @@
     prevState = curState;
     curState  = state;
     tickTime  = performance.now();
+
+    // If server moved MY snake in the old direction (hasn't processed our input yet),
+    // override its position with the previous position so there's no backward snap.
+    if (localDir && myId && prevState) {
+      const prevMe = prevState.players.find(p => p.id === myId);
+      const curMe  = curState.players.find(p => p.id === myId);
+      if (prevMe && curMe && curMe.alive && prevMe.alive && curMe.direction !== localDir) {
+        curMe.body      = prevMe.body;
+        curMe.direction = localDir;
+      }
+    }
   });
 
   socket.on('you_died', data => {
