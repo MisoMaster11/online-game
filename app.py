@@ -7,7 +7,9 @@ from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'snek-secret-key-2024'
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
+import os
+_async_mode = 'gevent' if os.environ.get('RENDER') else 'threading'
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode=_async_mode)
 
 GRID_W = 50
 GRID_H = 40

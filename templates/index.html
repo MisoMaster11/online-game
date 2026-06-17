@@ -265,7 +265,7 @@
   let dead    = false;
 
   // ── Socket ──────────────────────────────────────────────────
-  const socket = io({ transports: ['websocket'] });
+  const socket = io({ transports: ['websocket', 'polling'], upgrade: true });
 
   socket.on('config', (cfg) => {
     GRID_W = cfg.grid_w;
