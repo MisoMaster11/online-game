@@ -236,10 +236,11 @@ def tick():
 
     socketio.emit('game_state', state)
 
-    # Notify dead players
-    with lock:
-        for sid, p in game['players'].items():
-            if not p['alive']:
+    # Notify players who just died this tick (only once)
+    for sid in dead_this_tick:
+        with lock:
+            p = game['players'].get(sid)
+            if p:
                 socketio.emit('you_died', {
                     'score': p['score'],
                     'kills': game['kills'].get(sid, 0),

@@ -256,8 +256,22 @@
   const pingEl      = document.getElementById('ping');
   const startHint   = document.getElementById('startHint');
 
-  const CELL = 16;  // px per grid cell
+  const CELL = 16;
   let GRID_W = 50, GRID_H = 40;
+
+  // Set canvas internal dimensions immediately — don't wait for server events.
+  // Re-assigning canvas.width clears the canvas AND resets the 2D context state,
+  // so we only do it when the grid size actually changes.
+  function setCanvasSize(w, h) {
+    if (canvas.width !== w * CELL || canvas.height !== h * CELL) {
+      canvas.width  = w * CELL;
+      canvas.height = h * CELL;
+    }
+    GRID_W = w;
+    GRID_H = h;
+    resizeCanvas();
+  }
+  setCanvasSize(GRID_W, GRID_H);
 
   let myId    = null;
   let myColor = '#4ECDC4';
@@ -268,10 +282,7 @@
   const socket = io({ transports: ['websocket', 'polling'], upgrade: true });
 
   socket.on('config', (cfg) => {
-    GRID_W = cfg.grid_w;
-    GRID_H = cfg.grid_h;
-    canvas.width  = GRID_W * CELL;
-    canvas.height = GRID_H * CELL;
+    setCanvasSize(cfg.grid_w, cfg.grid_h);
   });
 
   socket.on('joined', (data) => {
@@ -283,12 +294,7 @@
 
   socket.on('game_state', (state) => {
     gameState = state;
-    if (state.grid) {
-      GRID_W = state.grid.w;
-      GRID_H = state.grid.h;
-      canvas.width  = GRID_W * CELL;
-      canvas.height = GRID_H * CELL;
-    }
+    if (state.grid) setCanvasSize(state.grid.w, state.grid.h);
     renderFrame();
   });
 
@@ -370,18 +376,6 @@
     socket.emit('respawn');
   });
 
-  // ── Camera (follow my snake) ─────────────────────────────────
-  let camX = 0, camY = 0;
-  const VIEW_W = () => Math.min(canvas.width,  window.innerWidth);
-  const VIEW_H = () => Math.min(canvas.height, window.innerHeight);
-
-  function updateCamera(headX, headY) {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const scale = Math.min(vw / (GRID_W * CELL), vh / (GRID_H * CELL));
-    // We'll draw everything and just let CSS scale the canvas
-  }
-
   // Scale canvas to fit screen
   function resizeCanvas() {
     const scale = Math.min(
@@ -392,12 +386,11 @@
     canvas.style.height = (GRID_H * CELL * scale) + 'px';
   }
   window.addEventListener('resize', resizeCanvas);
-  resizeCanvas();
 
   // ── Render ───────────────────────────────────────────────────
   function renderFrame() {
     if (!gameState) return;
-    resizeCanvas();
+    try {
 
     const { players, food } = gameState;
 
@@ -465,6 +458,11 @@
         <div class="lb-score">${p.length}</div>
       </div>
     `).join('');
+    } catch (err) {
+      ctx.fillStyle = '#fff';
+      ctx.font = '14px monospace';
+      ctx.fillText('Render error: ' + err.message, 10, 30);
+    }
   }
 
   function drawSnake(p, isMe) {
