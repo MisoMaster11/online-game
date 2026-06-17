@@ -272,6 +272,7 @@
   let myId      = null;
   let dead      = false;
   let lastDir   = null;
+  let localDir  = null;  // last direction I sent; used for MY head extrapolation
 
   // Two snapshots for interpolation: prev and cur server state
   let curState  = null;
@@ -301,6 +302,7 @@
   socket.on('you_died', data => {
     if (dead) return;
     dead = true;
+    localDir = null;
     document.getElementById('dScore').textContent = data.score;
     document.getElementById('dKills').textContent = data.kills;
     document.getElementById('dLen').textContent   = data.length;
@@ -321,12 +323,8 @@
   function sendDir(d) {
     if (d === lastDir) return;
     lastDir = d;
+    localDir = d;
     startHint.style.display = 'none';
-    // Optimistically update direction for smooth eye rendering
-    if (curState && myId) {
-      const me = curState.players.find(p => p.id === myId);
-      if (me) me.direction = d;
-    }
     socket.emit('dir', { d });
   }
 
@@ -360,7 +358,7 @@
 
   respawnBtn.addEventListener('click', () => {
     deathScreen.style.display = 'none';
-    dead = false; lastDir = null;
+    dead = false; lastDir = null; localDir = null;
     startHint.style.display = 'block';
     socket.emit('respawn');
   });
@@ -452,7 +450,8 @@
     // At t=0 snake is at server position; at t=1 it has advanced one full cell.
     // Head extrapolates forward in movement direction.
     // Segment i extrapolates toward segment i-1 (where it will be next tick).
-    const [dx, dy] = DELTA[cur.direction] || [1, 0];
+    const dir = (isMe && localDir) ? localDir : cur.direction;
+    const [dx, dy] = DELTA[dir] || [1, 0];
     const hx = (cur.body[0].x + dx * t) * CELL;
     const hy = (cur.body[0].y + dy * t) * CELL;
 
@@ -474,8 +473,8 @@
     ctx.fill();
     ctx.shadowBlur = 0;
 
-    // Eyes
-    drawEyes(hx, hy, cur.direction);
+    // Eyes — use localDir for my snake so they match head movement
+    drawEyes(hx, hy, dir);
 
     // Name tag
     ctx.font = 'bold 11px Segoe UI, sans-serif';
